@@ -26,6 +26,8 @@ export interface VisualFixtureOptions {
   expiryThresholds?: boolean
   missingCpuMetricHistory?: boolean
   pingTaskOrdering?: boolean
+  threePingTasks?: boolean
+  emptyPingHistory?: boolean
   generalCardKeys?: string[]
 }
 
@@ -77,7 +79,7 @@ function buildClients(freePriceNode = false, expiryThresholds = false) {
   }))
 }
 
-function buildStatuses() {
+function buildStatuses(threePingTasks = false) {
   return Object.fromEntries(Array.from({ length: 12 }, (_, index) => {
     const uuid = uuidFor(index)
     const offline = index === 5
@@ -116,9 +118,15 @@ function buildStatuses() {
       uptime: offline ? 0 : (index + 3) * 86_400,
       message: '',
       updated_at: FIXED_NOW,
-      ping: {
-        1: { name: 'Tokyo', latest: offline ? -1 : 42 + index * 13, avg: 50 + index * 11, tail: 88 + index * 14, loss: offline ? 100 : index * 2.3, min: 32, max: 260 },
-      },
+      ping: threePingTasks
+        ? {
+            1: { name: '联通', latest: offline ? -1 : 42 + index, avg: 50 + index, tail: 88 + index, loss: offline ? 100 : 0.5, min: 32, max: 260 },
+            2: { name: '电信', latest: offline ? -1 : 58 + index, avg: 64 + index, tail: 92 + index, loss: offline ? 100 : 1.2, min: 40, max: 280 },
+            3: { name: '移动', latest: offline ? -1 : 76 + index, avg: 81 + index, tail: 110 + index, loss: offline ? 100 : 2.4, min: 48, max: 320 },
+          }
+        : {
+            1: { name: 'Tokyo', latest: offline ? -1 : 42 + index * 13, avg: 50 + index * 11, tail: 88 + index * 14, loss: offline ? 100 : index * 2.3, min: 32, max: 260 },
+          },
     }]
   }))
 }
@@ -235,7 +243,7 @@ function jsonRpcResult(id: unknown, result: unknown) {
   return { jsonrpc: '2.0', id, result }
 }
 
-async function handleRpc(route: Route, clientFixtures = clients, options: VisualFixtureOptions = {}): Promise<void> {
+async function handleRpc(route: Route, clientFixtures = clients, statusFixtures = statuses, options: VisualFixtureOptions = {}): Promise<void> {
   const payload = route.request().postDataJSON() as { id: unknown, method: string, params?: Record<string, unknown> }
   const uuid = typeof payload.params?.uuid === 'string' ? payload.params.uuid : uuidFor(0)
   const pingTasks = options.pingTaskOrdering
@@ -244,7 +252,13 @@ async function handleRpc(route: Route, clientFixtures = clients, options: Visual
         { id: 10, name: '浙江联通', interval: 60, loss: 0, weight: 1 },
         { id: 20, name: '浙江电信', interval: 60, loss: 0, weight: 2 },
       ]
-    : [{ id: 1, name: 'Tokyo', interval: 60, loss: 3.2, weight: 1 }]
+    : options.threePingTasks
+      ? [
+          { id: 1, name: '联通', interval: 60, loss: 0.5, weight: 0 },
+          { id: 2, name: '电信', interval: 60, loss: 1.2, weight: 1 },
+          { id: 3, name: '移动', interval: 60, loss: 2.4, weight: 2 },
+        ]
+      : [{ id: 1, name: 'Tokyo', interval: 60, loss: 3.2, weight: 1 }]
   const metricPingTasks = options.pingTaskOrdering
     ? [pingTasks[2]!, pingTasks[0]!, pingTasks[1]!]
     : pingTasks
@@ -264,14 +278,14 @@ async function handleRpc(route: Route, clientFixtures = clients, options: Visual
       result = clientFixtures
       break
     case 'common:getNodesLatestStatus':
-      result = statuses
+      result = statusFixtures
       break
     case 'common:getNodeRecentStatus':
       result = { count: 48, records: buildRecords(uuid) }
       break
     case 'common:getRecords':
       result = payload.params?.type === 'ping'
-        ? { count: 48, records: pingRecords, tasks: pingTasks }
+        ? { count: options.emptyPingHistory ? 0 : 48, records: options.emptyPingHistory ? [] : pingRecords, tasks: pingTasks }
         : { count: 48, records: buildRecords(uuid) }
       break
     case 'public:getClientRecentRecords':
@@ -281,7 +295,7 @@ async function handleRpc(route: Route, clientFixtures = clients, options: Visual
       result = { count: 48, records: buildRecords(uuid), load_type: 'all', has_gpu_data: false }
       break
     case 'public:getPingRecords':
-      result = { count: 48, records: pingRecords, tasks: pingTasks }
+      result = { count: options.emptyPingHistory ? 0 : 48, records: options.emptyPingHistory ? [] : pingRecords, tasks: pingTasks }
       break
     case 'public:getPublicPingTasks':
       result = pingTasks
@@ -290,7 +304,9 @@ async function handleRpc(route: Route, clientFixtures = clients, options: Visual
       result = METRIC_KEYS.map(name => ({ name, description: name, type: 'gauge', retention_days: 30 }))
       break
     case 'public:queryMetrics':
-      result = buildMetricResponse(payload.params ?? {}, options, pingTasks)
+      result = options.emptyPingHistory
+        ? { start: FIXED_NOW, end: FIXED_NOW, series: [], count: 0 }
+        : buildMetricResponse(payload.params ?? {}, options, pingTasks)
       break
     case 'public:getPingMetricStats':
       result = options.pingTaskOrdering
@@ -342,6 +358,7 @@ export async function installKomariFixture(page: Page, options: VisualFixtureOpt
   const clientFixtures = options.freePriceNode || options.expiryThresholds
     ? buildClients(options.freePriceNode, options.expiryThresholds)
     : clients
+  const statusFixtures = options.threePingTasks ? buildStatuses(true) : statuses
   const settings = {
     themeMode: options.dark ? 'dark' : 'light',
     dataUpdateInterval: 60,
@@ -415,7 +432,7 @@ export async function installKomariFixture(page: Page, options: VisualFixtureOpt
     contentType: 'application/json',
     body: JSON.stringify({ status: 'success', message: 'ok', data: { version: '1.2.6-visual', hash: 'visual' } }),
   }))
-  await page.route('**/rpc2', route => handleRpc(route, clientFixtures, options))
+  await page.route('**/rpc2', route => handleRpc(route, clientFixtures, statusFixtures, options))
   await page.route('https://ipwho.is/', route => route.fulfill({
     contentType: 'application/json',
     body: JSON.stringify({ success: true, ip: '2001:db8::25', city: 'Tokyo', region: 'Tokyo', country: 'Japan', connection: { org: 'Example Networks' } }),

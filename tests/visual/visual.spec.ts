@@ -52,6 +52,20 @@ test('home dark mobile', async ({ page }) => {
   await expect(page).toHaveScreenshot('home-dark-mobile.png', { fullPage: false })
 })
 
+test('home Ping fallback keeps three tasks separate when history is empty', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 })
+  await installKomariFixture(page, { threePingTasks: true, emptyPingHistory: true })
+  await openStablePage(page)
+
+  const card = page.getByRole('button', { name: '查看节点 主控-洛杉矶 详情' })
+  await expect(card.getByText('三网', { exact: true })).toHaveCount(2)
+  await expect(card.locator('[data-node-ping-task^="latency-"]')).toHaveCount(3)
+  await expect(card.locator('[data-node-ping-task^="loss-"]')).toHaveCount(3)
+  await expect(card.locator('[data-node-ping-task-value="latency-1"]')).toHaveText('42 ms')
+  await expect(card.locator('[data-node-ping-task-value="loss-3"]')).toHaveText('2.4%')
+  await expect(card.locator('[data-node-ping-task-bars="latency-1"] > *')).toHaveCount(20)
+})
+
 test('home accessible list desktop', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 720 })
   await installKomariFixture(page, { colorVisionFriendly: true, viewMode: 'list', hideEarth: true })

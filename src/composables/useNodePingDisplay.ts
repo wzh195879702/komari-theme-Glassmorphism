@@ -1,8 +1,11 @@
 import type { MaybeRefOrGetter } from 'vue'
+import type { NodePingHistoryPoint, NodePingTaskStatsState } from '@/composables/useNodePingStats'
+import type { NodeStatusPing } from '@/utils/rpc'
 import { computed, toValue } from 'vue'
 import { useNodePingStats } from '@/composables/useNodePingStats'
 import { PING_SUMMARY_MAX_COUNT } from '@/constants/load'
 import { useAppStore } from '@/stores/app'
+import { getChartSeriesPalette } from '@/utils/chartPalette'
 import { formatDateTime } from '@/utils/helper'
 
 export type NodePingMetric = 'latency' | 'loss'
@@ -13,8 +16,19 @@ export interface NodePingBar {
   tooltip: string
 }
 
+export interface NodePingTaskRow {
+  id: string
+  name: string
+  color: string
+  latencyBars: NodePingBar[]
+  lossBars: NodePingBar[]
+  latencyDisplay: string
+  lossDisplay: string
+}
+
 interface UseNodePingDisplayOptions {
   enabled?: MaybeRefOrGetter<boolean>
+  latestPing?: MaybeRefOrGetter<Record<string, NodeStatusPing> | undefined>
   loadingDisplayText?: string
   emptyDisplayText?: string
   loadingPanelTooltipText?: Partial<Record<NodePingMetric, string>>
@@ -72,10 +86,10 @@ export function useNodePingDisplay(
     hours: pingStatsHours,
     enabled: pingStatsEnabled,
     maxCount: PING_SUMMARY_MAX_COUNT,
+    latestPing: options.latestPing,
   })
 
-  function buildPingBars(metric: NodePingMetric): NodePingBar[] {
-    const points = pingStats.history.value
+  function buildPingBars(metric: NodePingMetric, points: NodePingHistoryPoint[], keyPrefix = ''): NodePingBar[] {
     if (!points.length)
       return []
 
@@ -83,7 +97,7 @@ export function useNodePingDisplay(
       const value = point[metric]
 
       return {
-        key: `${point.time}-${index}`,
+        key: `${keyPrefix}${point.time}-${index}`,
         className: value === null
           ? 'bg-muted-foreground/15'
           : metric === 'latency'
@@ -96,6 +110,19 @@ export function useNodePingDisplay(
             : `${formatDateTime(point.time, 'HH:mm:ss')}\n${value.toFixed(1)}%`,
       }
     })
+  }
+
+  function buildTaskBars(task: NodePingTaskStatsState, metric: NodePingMetric): NodePingBar[] {
+    const bars = buildPingBars(metric, task.history, `${task.id}-`)
+    if (bars.length >= EMPTY_PING_BAR_COUNT)
+      return bars
+
+    const emptyBars = Array.from({ length: EMPTY_PING_BAR_COUNT - bars.length }, (_, index) => ({
+      key: `${task.id}-${metric}-empty-${index}`,
+      className: 'bg-muted-foreground/10',
+      tooltip: '无采样数据',
+    }))
+    return [...emptyBars, ...bars]
   }
 
   function buildEmptyPingBars(metric: NodePingMetric): NodePingBar[] {
@@ -116,8 +143,8 @@ export function useNodePingDisplay(
     }))
   }
 
-  const latencyBars = computed(() => buildPingBars('latency'))
-  const lossBars = computed(() => buildPingBars('loss'))
+  const latencyBars = computed(() => buildPingBars('latency', pingStats.history.value))
+  const lossBars = computed(() => buildPingBars('loss', pingStats.history.value))
   const latencyRenderBars = computed(() => latencyBars.value.length ? latencyBars.value : buildEmptyPingBars('latency'))
   const lossRenderBars = computed(() => lossBars.value.length ? lossBars.value : buildEmptyPingBars('loss'))
 
@@ -159,6 +186,30 @@ export function useNodePingDisplay(
     return `平均丢包 ${pingStats.avgLoss.value.toFixed(1)}%${volatility}`
   })
 
+  const taskRows = computed<NodePingTaskRow[]>(() => {
+    const palette = getChartSeriesPalette(appStore.colorVisionFriendly)
+    return pingStats.taskStats.value.map((task, index) => ({
+      id: task.id,
+      name: task.name,
+      color: palette[index % palette.length] ?? palette[0] ?? '#10b981',
+      latencyBars: buildTaskBars(task, 'latency'),
+      lossBars: buildTaskBars(task, 'loss'),
+      latencyDisplay: task.hasData && task.history.some(point => point.latency !== null)
+        ? `${Math.round(task.avgLatency)} ms`
+        : '-',
+      lossDisplay: task.hasData && task.history.some(point => point.loss !== null)
+        ? `${task.avgLoss.toFixed(1)}%`
+        : '-',
+    }))
+  })
+
+  const taskCountDisplay = computed(() => {
+    const count = taskRows.value.length
+    if (count === 3)
+      return '三网'
+    return count ? `${count} 项` : '-'
+  })
+
   return {
     pingStats,
     pingStatsEnabled,
@@ -169,5 +220,7 @@ export function useNodePingDisplay(
     lossDisplay,
     latencyPanelTooltip,
     lossPanelTooltip,
+    taskRows,
+    taskCountDisplay,
   }
 }

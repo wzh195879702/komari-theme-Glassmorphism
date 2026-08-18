@@ -1,4 +1,4 @@
-import type { Client, NodeStatus } from '@/utils/rpc'
+import type { Client, NodeStatus, NodeStatusPing } from '@/utils/rpc'
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import { useAppStore } from '@/stores/app'
@@ -67,6 +67,7 @@ export interface NodeData {
   uptime: number
   message?: string
   status_updated_at?: string
+  ping?: Record<string, NodeStatusPing>
 }
 
 /** WebSocket 连接状态 */
@@ -96,6 +97,7 @@ interface StatusData {
   connections_udp: number
   uptime: number
   message?: string
+  ping?: Record<string, NodeStatusPing>
   updated_at?: string
 }
 
@@ -275,6 +277,8 @@ const useNodesStore = defineStore('nodes', () => {
       node.uptime = status.uptime
     if (node.message !== status.message)
       node.message = status.message
+    if (node.ping !== status.ping)
+      node.ping = status.ping
     if (node.status_updated_at !== status.updated_at)
       node.status_updated_at = status.updated_at
   }

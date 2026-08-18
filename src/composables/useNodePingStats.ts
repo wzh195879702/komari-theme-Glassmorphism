@@ -1,5 +1,5 @@
 import type { MaybeRefOrGetter } from 'vue'
-import type { PingMetricTaskStats } from '@/utils/rpc'
+import type { NodeStatusPing, PingMetricTaskStats } from '@/utils/rpc'
 import { useThrottleFn } from '@vueuse/core'
 import { computed, onScopeDispose, ref, shallowRef, toValue, watch } from 'vue'
 import { PING_RECORD_MAX_COUNT } from '@/constants/load'
@@ -21,6 +21,11 @@ export interface NodePingStatsState {
   hasData: boolean
 }
 
+export interface NodePingTaskStatsState extends NodePingStatsState {
+  id: string
+  name: string
+}
+
 interface PingRecord {
   client: string
   task_id: number
@@ -29,6 +34,7 @@ interface PingRecord {
 }
 
 interface MetricLossPoint {
+  taskId: number
   time: string
   value: number
   count: number
@@ -304,6 +310,7 @@ async function loadPingMetricRecords(nodeUuid: string, hours: number, maxCount?:
             continue
 
           metricLossPoints.push({
+            taskId,
             time: point.time,
             value: point.value,
             count: isFiniteNumber(point.count) && point.count > 0 ? point.count : 1,
@@ -638,6 +645,7 @@ export function useNodePingStats(
     hours?: MaybeRefOrGetter<number>
     enabled?: MaybeRefOrGetter<boolean>
     maxCount?: MaybeRefOrGetter<number | undefined>
+    latestPing?: MaybeRefOrGetter<Record<string, NodeStatusPing> | undefined>
   },
 ) {
   const loading = ref(false)
@@ -684,17 +692,98 @@ export function useNodePingStats(
     if (!enabled || !nodeUuid.trim())
       return createEmptyStats()
 
+    const latestPing = toValue(options?.latestPing)
+    const latestEntries = Object.values(latestPing ?? {})
+      .filter(ping => Number.isFinite(ping.latest) || Number.isFinite(ping.loss))
+    const latestLatencyValues = latestEntries
+      .map(ping => ping.latest)
+      .filter(value => Number.isFinite(value) && value >= 0)
+    const latestLossValues = latestEntries
+      .map(ping => ping.loss)
+      .filter(value => Number.isFinite(value) && value >= 0)
+    const latestFallback = latestEntries.length
+      ? {
+          avgLatency: average(latestLatencyValues),
+          avgLoss: average(latestLossValues),
+          avgVolatility: 0,
+          history: [{
+            time: new Date().toISOString(),
+            latency: latestLatencyValues.length ? average(latestLatencyValues) : null,
+            loss: latestLossValues.length ? average(latestLossValues) : null,
+          }],
+          hasData: true,
+        }
+      : null
+
     // 通过 getSharedPingRecordsEntry 读取（不存在则创建），确保 computed 始终对
     // entry.data 这个 shallowRef 建立响应式依赖——即便首次加载尚未返回。
     const entry = getSharedPingRecordsEntry(hours, maxCount, nodeUuid)
     const state = entry.data.value
     if (!state)
-      return readStatsCache(nodeUuid, hours, maxCount) ?? createEmptyStats()
+      return readStatsCache(nodeUuid, hours, maxCount) ?? latestFallback ?? createEmptyStats()
 
     const records = state.recordsByClient.get(nodeUuid) ?? []
     return records.length || state.metricStats?.length
       ? buildStats(records, state.metricStats, state.metricLossPoints)
-      : createEmptyStats()
+      : latestFallback ?? createEmptyStats()
+  })
+
+  const taskStats = computed<NodePingTaskStatsState[]>(() => {
+    const { uuid: nodeUuid, hours, maxCount, enabled } = resolved.value
+    if (!enabled || !nodeUuid.trim())
+      return []
+
+    const latestPing = toValue(options?.latestPing) ?? {}
+    const entry = getSharedPingRecordsEntry(hours, maxCount, nodeUuid)
+    const state = entry.data.value
+    const records = state?.recordsByClient.get(nodeUuid) ?? []
+    const taskNames = new Map<number, string>()
+
+    for (const [taskId, ping] of Object.entries(latestPing))
+      taskNames.set(normalizeTaskId(taskId), ping.name?.trim() || `任务 ${taskId}`)
+    for (const stat of state?.metricStats ?? []) {
+      const taskId = normalizeTaskId(stat.task_id)
+      if (!taskNames.has(taskId))
+        taskNames.set(taskId, stat.name?.trim() || `任务 ${stat.task_id}`)
+    }
+    for (const record of records) {
+      if (!taskNames.has(record.task_id))
+        taskNames.set(record.task_id, `任务 ${record.task_id}`)
+    }
+
+    return Array.from(taskNames.entries(), ([taskId, name]) => {
+      const taskRecords = records.filter(record => record.task_id === taskId)
+      const metricStats = (state?.metricStats ?? [])
+        .filter(stat => normalizeTaskId(stat.task_id) === taskId)
+      const metricLossPoints = state?.metricLossPoints
+        ?.filter(point => point.taskId === taskId)
+      const historical = taskRecords.length || metricStats.length
+        ? buildStats(taskRecords, metricStats, metricLossPoints)
+        : createEmptyStats()
+      if (historical.hasData)
+        return { id: String(taskId), name, ...historical }
+
+      const latest = Object.entries(latestPing)
+        .find(([id]) => normalizeTaskId(id) === taskId)?.[1]
+      const latency = latest && isFiniteNumber(latest.latest) && latest.latest >= 0
+        ? latest.latest
+        : null
+      const loss = latest && isFiniteNumber(latest.loss) && latest.loss >= 0
+        ? latest.loss
+        : null
+
+      return {
+        id: String(taskId),
+        name,
+        avgLatency: latency ?? 0,
+        avgLoss: loss ?? 0,
+        avgVolatility: 0,
+        history: latency !== null || loss !== null
+          ? [{ time: new Date().toISOString(), latency, loss }]
+          : [],
+        hasData: latency !== null || loss !== null,
+      }
+    })
   })
 
   // 副作用：按需触发首次共享加载并维护 loading/error，不再命令式写入 stats。
@@ -764,6 +853,7 @@ export function useNodePingStats(
 
   return {
     stats,
+    taskStats,
     loading,
     error,
     history: computed(() => stats.value.history),

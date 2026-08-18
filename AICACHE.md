@@ -595,6 +595,14 @@
 - Final live verification on `https://mt.vpnmiao.com/` loaded the expected `index-Cq7ioLuk.js` asset. Desktop remount measured 16 cards at 0/500 ms, 26 at 2.3 s and all 54 at 5.1 s; a rapid 1800px scroll raised the mounted set from 16 to 40 within 200 ms. Mobile 390x844 measured 4 cards initially and all 54 by 5.3 s, with `scrollWidth === clientWidth` on both breakpoints.
 - The comparison panel opened at 0/4 with all comparison metric labels previewed. Weekly health generation returned an immediate realtime summary, completed the capped 6,000-sample history pass in about 8 seconds, and populated composite anomaly, CPU, memory, disk-growth, traffic and Ping findings. The final browser console contained no warnings or errors.
 
+## 2026-08-18 home Ping summary fallback
+
+- Root cause: the home card only consumed historical Ping records / Metric Store responses. The realtime `NodeStatus.ping` task summaries were typed but dropped while merging status into `NodeData`, so an empty history response rendered gray bars and `-` even when the backend was still probing tasks.
+- Fix: preserve `ping` through the nodes store and use the latest per-task latency/loss summary as a display-only fallback when historical data is empty. Historical data remains the preferred source and its aggregation semantics are unchanged.
+- Validation: `bun run type-check`, `bun run lint`, `bun run build`, and `git diff --check` passed. Build created `komari-theme-Glassmorphism-build-b353afb.zip`; existing large globe chunk warnings remain.
+- Runtime note: no local Komari backend was running on `127.0.0.1:25774`, so the screenshot scenario still needs verification against the deployed backend after installing the updated theme.
+- Follow-up: the first fallback incorrectly averaged all realtime tasks into one synthetic point. The card now keeps per-task histories and renders one row per task; a three-network empty-history fixture verifies two `三网` headers, three latency rows, three loss rows, independent values, and 20 bars per row. The focused system-Chrome test passed in 1.8 seconds.
+
 ## 2026-07-25 visual regression automation (M6)
 
 - Goal: add deterministic Playwright screenshot regression coverage without adding any runtime theme feature or real-site dependency.
